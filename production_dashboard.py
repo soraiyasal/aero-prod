@@ -370,9 +370,9 @@ with st.sidebar:
     st.divider()
     st.subheader("📂 Add data")
     st.caption(
-        "Upload one pair of files per month. "
-        "Month is read from the filename automatically. "
-        "You can upload all months at once."
+        "February 2026 loads automatically as the baseline. "
+        "Upload additional months here to add them — "
+        "the Trends tab unlocks once two or more months are loaded."
     )
     cap_uploads  = st.file_uploader("Cap files (.xlsx)", type="xlsx",
                                     accept_multiple_files=True, key="cap_up")
@@ -388,27 +388,31 @@ DEFAULT_AERO = "отчет_фасовочные_линии_февраль_2026_e
 
 def build_map(uploads, default_path):
     fmap = {}
-    if uploads:
-        for f in uploads:
-            period = detect_period(f.name)
-            if not period:
-                period = st.sidebar.text_input(
-                    f"Month for '{f.name}'",
-                    placeholder="e.g. Mar 2026", key=f"lbl_{f.name}")
-            if period:
-                fmap[period] = f
-    else:
-        if os.path.exists(default_path):
-            period = detect_period(default_path) or "Feb 2026"
-            fmap[period] = default_path
+    # Always load the bundled default file first (Feb 2026 baseline).
+    # This means the dashboard is never empty — it always has something to show.
+    if os.path.exists(default_path):
+        default_period = detect_period(default_path) or "Feb 2026"
+        fmap[default_period] = default_path
+    # Uploaded files are added on top. If an upload covers the same period
+    # as a default (e.g. a corrected Feb file), it overwrites the default.
+    for f in (uploads or []):
+        period = detect_period(f.name)
+        if not period:
+            period = st.sidebar.text_input(
+                f"Month for '{f.name}'",
+                placeholder="e.g. Mar 2026", key=f"lbl_{f.name}")
+        if period:
+            fmap[period] = f
     return fmap
 
 cap_map  = build_map(cap_uploads,  DEFAULT_CAP)
 aero_map = build_map(aero_uploads, DEFAULT_AERO)
 
 if not cap_map and not aero_map:
-    st.warning("No data files found. Upload files via the sidebar, "
-               "or place them in the same folder as this script.")
+    st.warning(
+        "No data files found. Place the two February xlsx files in the same "
+        "folder as this script, or upload files via the sidebar."
+    )
     st.stop()
 
 # ─── Load all data ────────────────────────────────────────────────────────────
