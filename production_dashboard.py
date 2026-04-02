@@ -63,8 +63,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─── Default file paths (when running with uploaded files in place) ──────────
-DEFAULT_CAP  = "отчет_цеха_производства_колпаков_февраль_2026_eng.xlsx"
-DEFAULT_AERO = "отчет_фасовочные_линии_февраль_2026_eng.xlsx"
+DEFAULT_CAP  = "отчет цеха производства колпаков февраль 2026 eng.xlsx"
+DEFAULT_AERO = "отчет фасовочные линии февраль 2026 eng.xlsx"
 
 # ─── Sidebar ────────────────────────────────────────────────────────────────
 with st.sidebar:
