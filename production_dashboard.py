@@ -383,8 +383,9 @@ with st.sidebar:
                "they'll load automatically.")
 
 # ─── Build file → period maps ─────────────────────────────────────────────────
-DEFAULT_CAP  = "отчет_цеха_производства_колпаков_февраль_2026_eng.xlsx"
-DEFAULT_AERO = "отчет_фасовочные_линии_февраль_2026_eng.xlsx"
+_SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_CAP  = os.path.join(_SCRIPT_DIR, "отчет_цеха_производства_колпаков_февраль_2026_eng.xlsx")
+DEFAULT_AERO = os.path.join(_SCRIPT_DIR, "отчет_фасовочные_линии_февраль_2026_eng.xlsx")
 
 def build_map(uploads, default_path):
     fmap = {}
