@@ -111,9 +111,18 @@ def load_caps(src, period):
         - caps['changeover_min'].fillna(0)
         - caps['daily_maint_min'].fillna(0)
         - caps['other_stops_min'].fillna(0))
-    caps['gap_pcs']        = caps['actual_pcs'] - caps['planned_pcs']
-    caps['attainment_pct'] = (caps['actual_pcs'] / caps['planned_pcs'] * 100).round(1)
-    caps['period']         = period
+    caps['gap_pcs']         = caps['actual_pcs'] - caps['planned_pcs']
+    caps['attainment_pct']  = (caps['actual_pcs'] / caps['planned_pcs'] * 100).round(1)
+    caps['units_per_hour']  = (caps['actual_pcs'] / (caps['total_time_min'] / 60)).round(0)
+    caps['changeover_pct']  = (caps['changeover_min'].fillna(0) / caps['total_time_min'] * 100).round(1)
+    caps['maint_pct']       = (caps['daily_maint_min'].fillna(0) / caps['total_time_min'] * 100).round(1)
+    caps['unplanned_pct']   = (caps['other_stops_min'].fillna(0) / caps['total_time_min'] * 100).round(1)
+    caps['defect_rate_pct'] = (
+        caps['defective_kg'] /
+        (caps['planned_pcs'] * caps['weight_g'].fillna(0) / 1000) * 100
+    ).round(2)
+    caps['first_pass_yield'] = (caps['OEE2'] * 100).round(1)
+    caps['period']           = period
     return caps
 
 
@@ -157,9 +166,27 @@ def load_aero(src, period):
         - aero['setup_min'].fillna(0)
         - aero['food_stops_min'].fillna(0)
         - aero['other_stops_min'].fillna(0))
-    aero['gap_pcs']        = aero['actual_pcs'] - aero['planned_pcs']
-    aero['attainment_pct'] = (aero['actual_pcs'] / aero['planned_pcs'] * 100).round(1)
-    aero['period']         = period
+    aero['gap_pcs']             = aero['actual_pcs'] - aero['planned_pcs']
+    aero['attainment_pct']      = (aero['actual_pcs'] / aero['planned_pcs'] * 100).round(1)
+    aero['units_per_hour']      = (aero['actual_pcs'] / (aero['total_time_min'] / 60)).round(0)
+    aero['changeover_pct']      = (aero['setup_min'].fillna(0) / aero['total_time_min'] * 100).round(1)
+    aero['food_pct']            = (aero['food_stops_min'].fillna(0) / aero['total_time_min'] * 100).round(1)
+    aero['unplanned_pct']       = (aero['other_stops_min'].fillna(0) / aero['total_time_min'] * 100).round(1)
+    # Incoming defect rate: incoming defects as % of actual output
+    aero['incoming_defect_pct'] = (
+        aero['initial_defects_pcs'].fillna(0) /
+        aero['actual_pcs'].replace(0, np.nan) * 100
+    ).round(3)
+    # Manufacturing defect rate: on-line defects as % of actual output
+    aero['mfg_defect_rate_pct'] = (
+        aero['mfg_defects_pcs'].fillna(0) /
+        aero['actual_pcs'].replace(0, np.nan) * 100
+    ).round(3)
+    # First pass yield approximation via OEE2
+    aero['first_pass_yield']    = (aero['OEE2'] * 100).round(1)
+    # Flag batches where defect field is blank (data quality)
+    aero['defect_recorded']     = aero['mfg_defects_pcs'].notna()
+    aero['period']              = period
     return aero
 
 
@@ -254,6 +281,18 @@ def generate_insights(caps, aero, multi_month):
                         "Very few batches suggest a mid-period machine failure or "
                         "extended unplanned downtime. Verify against maintenance logs.",
                         machine)
+
+    # Changeover > productive time (data quality / very short runs)
+    if not aero.empty:
+        odd = aero[aero['changeover_pct'] > 100]
+        if len(odd) > 0:
+            add('amber','Data quality',
+                f"{len(odd)} aerosol batches where changeover exceeds run time",
+                f"Changeover % > 100% means the setup took longer than the actual "
+                f"production run. These are very short runs — consider whether batches "
+                f"this small are worth running at all, or whether they can be "
+                f"consolidated with adjacent same-product batches.",
+                'Aerosol lines')
 
     # Changeover — aerosol
     if not aero.empty:
@@ -384,8 +423,8 @@ with st.sidebar:
 
 # ─── Build file → period maps ─────────────────────────────────────────────────
 _SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_CAP  = os.path.join(_SCRIPT_DIR, "отчет цеха производства колпаков февраль 2026 eng.xlsx")
-DEFAULT_AERO = os.path.join(_SCRIPT_DIR, "отчет фасовочные линии февраль 2026 eng.xlsx")
+DEFAULT_CAP  = os.path.join(_SCRIPT_DIR, "отчет_цеха_производства_колпаков_февраль_2026_eng.xlsx")
+DEFAULT_AERO = os.path.join(_SCRIPT_DIR, "отчет_фасовочные_линии_февраль_2026_eng.xlsx")
 
 def build_map(uploads, default_path):
     fmap = {}
@@ -602,6 +641,34 @@ with t_cap:
                  css_class='good' if df_c['OEE'].mean()>=0.85 else 'warn')
     with k5: kpi("Defective material",
                  f"{df_c['defective_kg'].sum():.0f} kg", css_class='warn')
+
+    # ── New KPI row ──
+    k6,k7,k8,k9,k10 = st.columns(5)
+    attain_100 = (df_c['attainment_pct'] >= 99.5).sum() / len(df_c) * 100
+    avg_uph    = df_c['units_per_hour'].mean()
+    avg_co_pct = df_c['changeover_pct'].mean()
+    avg_maint_pct = df_c['maint_pct'].mean()
+    avg_defect_rate = df_c['defect_rate_pct'].dropna()
+    avg_fpy    = df_c['first_pass_yield'].mean()
+    with k6:  kpi("Attainment ≥100%",
+                  f"{attain_100:.0f}%",
+                  "batches hitting plan",
+                  css_class='good' if attain_100>=95 else 'warn')
+    with k7:  kpi("Avg units/hour",
+                  f"{avg_uph:,.0f}",
+                  "across all machines")
+    with k8:  kpi("Avg changeover",
+                  f"{avg_co_pct:.1f}%",
+                  "of total batch time",
+                  css_class='warn' if avg_co_pct>5 else 'good')
+    with k9:  kpi("Avg defect rate",
+                  f"{avg_defect_rate.mean():.2f}%",
+                  "defective kg / planned kg",
+                  css_class='warn')
+    with k10: kpi("First pass yield",
+                  f"{avg_fpy:.1f}%",
+                  "via OEE2 (approx)",
+                  css_class='good' if avg_fpy>=97 else 'warn')
     st.divider()
 
     r1a,r1b = st.columns(2)
@@ -668,6 +735,98 @@ with t_cap:
     fig5.update_layout(height=280,margin=dict(t=10,b=10))
     st.plotly_chart(fig5, use_container_width=True)
 
+    # ── New KPI section ──
+    st.divider()
+    st.subheader("📐 Additional KPIs")
+
+    n1,n2 = st.columns(2)
+
+    with n1:
+        st.markdown("**Units per hour by machine**")
+        uph = df_c.groupby('machine').agg(
+            avg_uph=('units_per_hour','mean'),
+            min_uph=('units_per_hour','min'),
+            max_uph=('units_per_hour','max'),
+        ).reset_index()
+        fig_uph = go.Figure()
+        fig_uph.add_trace(go.Bar(
+            name='Avg units/hour', x=uph['machine'], y=uph['avg_uph'].round(0),
+            marker_color='#0066cc',
+            error_y=dict(type='data', symmetric=False,
+                         array=(uph['max_uph']-uph['avg_uph']).round(0),
+                         arrayminus=(uph['avg_uph']-uph['min_uph']).round(0),
+                         visible=True, color='#888')
+        ))
+        fig_uph.update_layout(yaxis_title='Units per hour', height=280,
+                              margin=dict(t=10,b=10),
+                              legend=dict(orientation='h',y=-0.2))
+        st.plotly_chart(fig_uph, use_container_width=True)
+
+    with n2:
+        st.markdown("**Changeover vs maintenance vs other stops (% of batch time)**")
+        stop_pct = df_c.groupby('machine').agg(
+            changeover=('changeover_pct','mean'),
+            maintenance=('maint_pct','mean'),
+            unplanned=('unplanned_pct','mean'),
+        ).reset_index()
+        fig_sp = go.Figure()
+        for col,nm,clr in [('changeover','Changeover','#ffc107'),
+                            ('maintenance','Maintenance','#17a2b8'),
+                            ('unplanned','Unplanned stops','#dc3545')]:
+            fig_sp.add_trace(go.Bar(name=nm, x=stop_pct['machine'],
+                                    y=stop_pct[col].fillna(0), marker_color=clr))
+        fig_sp.update_layout(barmode='group', yaxis_title='% of batch time',
+                             height=280, legend=dict(orientation='h',y=-0.2),
+                             margin=dict(t=10,b=10))
+        st.plotly_chart(fig_sp, use_container_width=True)
+
+    n3,n4 = st.columns(2)
+
+    with n3:
+        st.markdown("**Defect rate % by machine** (defective kg ÷ planned material kg)")
+        dr = df_c.groupby('machine').agg(
+            defect_rate=('defect_rate_pct','mean')
+        ).reset_index().dropna()
+        fig_dr = px.bar(dr, x='machine', y='defect_rate',
+                        color='defect_rate', color_continuous_scale='Reds',
+                        labels={'defect_rate':'Defect rate %'})
+        fig_dr.update_layout(height=280, margin=dict(t=10,b=10),
+                             coloraxis_showscale=False, yaxis_title='Defect rate %')
+        st.plotly_chart(fig_dr, use_container_width=True)
+
+    with n4:
+        st.markdown("**First pass yield by machine** (via OEE2 — approximate)")
+        fpy = df_c.groupby('machine').agg(
+            fpy=('first_pass_yield','mean')
+        ).reset_index()
+        fig_fpy = go.Figure()
+        fig_fpy.add_trace(go.Bar(x=fpy['machine'], y=fpy['fpy'].round(1),
+                                 marker_color='#28a745',
+                                 text=fpy['fpy'].round(1),
+                                 textposition='outside'))
+        fig_fpy.add_hline(y=98, line_dash='dash', line_color='#ffc107',
+                          annotation_text='98% target')
+        fig_fpy.update_layout(yaxis=dict(range=[90,101], title='First pass yield %'),
+                              height=280, margin=dict(t=10,b=10), showlegend=False)
+        st.plotly_chart(fig_fpy, use_container_width=True)
+
+    # Downtime reason Pareto from stop_desc
+    stop_texts = df_c['stop_desc'].dropna()
+    if len(stop_texts) > 0:
+        st.markdown("**Stop reason log** (free-text descriptions entered by operators)")
+        stop_df = stop_texts.value_counts().reset_index()
+        stop_df.columns = ['reason','count']
+        fig_par = px.bar(stop_df.head(15), x='count', y='reason',
+                         orientation='h', color='count',
+                         color_continuous_scale='Oranges',
+                         labels={'count':'Batches affected','reason':'Reason'})
+        fig_par.update_layout(height=max(200, len(stop_df.head(15))*28),
+                              margin=dict(t=10,b=10), coloraxis_showscale=False,
+                              yaxis=dict(autorange='reversed'))
+        st.plotly_chart(fig_par, use_container_width=True)
+    else:
+        st.info("No stop reason text has been entered for cap batches this period.")
+
     with st.expander("📋 Batch detail table"):
         avail = [c for c in ['period','machine','type_code','type_name','color',
                               'cap_code','planned_pcs','actual_pcs','attainment_pct',
@@ -700,6 +859,33 @@ with t_aero:
                  css_class='good' if df_a['OEE'].mean()>=0.85 else 'warn')
     with k5: kpi("Mfg defects",
                  f"{df_a['mfg_defects_pcs'].sum():,.0f} pcs", css_class='warn')
+
+    # ── New KPI row ──
+    k6,k7,k8,k9,k10 = st.columns(5)
+    a_attain_100    = (df_a['attainment_pct'] >= 99.5).sum() / len(df_a) * 100
+    a_avg_uph       = df_a['units_per_hour'].mean()
+    a_avg_co_pct    = df_a['changeover_pct'].mean()
+    a_rec_rate      = df_a['defect_recorded'].mean() * 100
+    a_incoming_rate = df_a['incoming_defect_pct'].mean()
+    with k6:  kpi("Attainment ≥100%",
+                  f"{a_attain_100:.0f}%",
+                  "batches hitting plan",
+                  css_class='good' if a_attain_100>=95 else 'warn')
+    with k7:  kpi("Avg units/hour",
+                  f"{a_avg_uph:,.0f}",
+                  "across all lines")
+    with k8:  kpi("Avg changeover",
+                  f"{a_avg_co_pct:.1f}%",
+                  "of total batch time",
+                  css_class='warn' if a_avg_co_pct>10 else 'good')
+    with k9:  kpi("Defect recording",
+                  f"{a_rec_rate:.0f}%",
+                  "batches with defect entered",
+                  css_class='good' if a_rec_rate>=90 else 'warn')
+    with k10: kpi("Incoming defect rate",
+                  f"{a_incoming_rate:.3f}%",
+                  "pre-line defects / output",
+                  css_class='warn' if a_incoming_rate>0.05 else 'good')
     st.divider()
 
     r1a,r1b = st.columns(2)
@@ -772,6 +958,115 @@ with t_aero:
     fig5.add_hline(y=0.85,line_dash='dot',line_color='#aaa')
     fig5.update_layout(height=420,margin=dict(t=10,b=10))
     st.plotly_chart(fig5, use_container_width=True)
+
+    # ── New KPI section ──
+    st.divider()
+    st.subheader("📐 Additional KPIs")
+
+    a1,a2 = st.columns(2)
+
+    with a1:
+        st.markdown("**Units per hour by line**")
+        uph_a = df_a.groupby('line').agg(
+            avg_uph=('units_per_hour','mean'),
+            min_uph=('units_per_hour','min'),
+            max_uph=('units_per_hour','max'),
+        ).reset_index()
+        fig_uph = go.Figure()
+        fig_uph.add_trace(go.Bar(
+            name='Avg units/hour', x=uph_a['line'], y=uph_a['avg_uph'].round(0),
+            marker_color='#7b2d8b',
+            error_y=dict(type='data', symmetric=False,
+                         array=(uph_a['max_uph']-uph_a['avg_uph']).round(0),
+                         arrayminus=(uph_a['avg_uph']-uph_a['min_uph']).round(0),
+                         visible=True, color='#888')
+        ))
+        fig_uph.update_layout(yaxis_title='Units per hour', height=280,
+                              margin=dict(t=10,b=10), showlegend=False)
+        st.plotly_chart(fig_uph, use_container_width=True)
+
+    with a2:
+        st.markdown("**Changeover, food breaks & unplanned stops (% of batch time)**")
+        sp_a = df_a.groupby('line').agg(
+            changeover=('changeover_pct','mean'),
+            food=('food_pct','mean'),
+            unplanned=('unplanned_pct','mean'),
+        ).reset_index()
+        fig_spa = go.Figure()
+        for col,nm,clr in [('changeover','Changeover','#ffc107'),
+                            ('food','Food breaks','#17a2b8'),
+                            ('unplanned','Unplanned stops','#dc3545')]:
+            fig_spa.add_trace(go.Bar(name=nm, x=sp_a['line'],
+                                     y=sp_a[col].fillna(0), marker_color=clr))
+        fig_spa.update_layout(barmode='group', yaxis_title='% of batch time',
+                              height=280, legend=dict(orientation='h',y=-0.2),
+                              margin=dict(t=10,b=10))
+        st.plotly_chart(fig_spa, use_container_width=True)
+
+    a3,a4 = st.columns(2)
+
+    with a3:
+        st.markdown("**Incoming defect rate by line** (pre-line defects ÷ actual output)")
+        inc = df_a.groupby('line').agg(
+            incoming_pct=('incoming_defect_pct','mean')
+        ).reset_index()
+        fig_inc = px.bar(inc, x='line', y='incoming_pct',
+                         color='incoming_pct', color_continuous_scale='Oranges',
+                         labels={'incoming_pct':'Incoming defect rate %'})
+        fig_inc.update_layout(height=280, margin=dict(t=10,b=10),
+                              coloraxis_showscale=False, yaxis_title='%')
+        st.plotly_chart(fig_inc, use_container_width=True)
+
+    with a4:
+        st.markdown("**Defect recording completeness by line**")
+        st.caption("32% of aerosol batches have no defect count — this inflates OEE2 to ~100%")
+        rec = df_a.groupby('line').agg(
+            recorded=('defect_recorded','mean')
+        ).reset_index()
+        rec['recorded_pct'] = (rec['recorded']*100).round(1)
+        rec['missing_pct']  = 100 - rec['recorded_pct']
+        fig_rec = go.Figure()
+        fig_rec.add_trace(go.Bar(name='Recorded', x=rec['line'],
+                                 y=rec['recorded_pct'], marker_color='#28a745'))
+        fig_rec.add_trace(go.Bar(name='Blank / missing', x=rec['line'],
+                                 y=rec['missing_pct'], marker_color='#dc3545'))
+        fig_rec.add_hline(y=100, line_dash='dash', line_color='#28a745',
+                          annotation_text='100% target')
+        fig_rec.update_layout(barmode='stack', yaxis_title='% of batches',
+                              height=280, legend=dict(orientation='h',y=-0.2),
+                              margin=dict(t=10,b=10))
+        st.plotly_chart(fig_rec, use_container_width=True)
+
+    # Attainment distribution
+    st.markdown("**Production attainment distribution** (actual ÷ planned per batch)")
+    fig_att = px.histogram(
+        df_a.dropna(subset=['attainment_pct']),
+        x='attainment_pct', color='line', nbins=40,
+        barmode='overlay', opacity=0.7,
+        color_discrete_map=LINE_COLORS,
+        labels={'attainment_pct':'Attainment %'}
+    )
+    fig_att.add_vline(x=100, line_dash='dash', line_color='#28a745',
+                      annotation_text='100%')
+    fig_att.update_layout(height=280, margin=dict(t=10,b=10))
+    st.plotly_chart(fig_att, use_container_width=True)
+
+    # Stop reason Pareto
+    stop_texts_a = df_a['stop_desc'].dropna()
+    if len(stop_texts_a) > 0:
+        st.markdown("**Stop reason log** (free-text descriptions entered by operators)")
+        sd = stop_texts_a.value_counts().reset_index()
+        sd.columns = ['reason','count']
+        fig_par = px.bar(sd.head(15), x='count', y='reason',
+                         orientation='h', color='count',
+                         color_continuous_scale='Purples',
+                         labels={'count':'Batches affected','reason':'Reason'})
+        fig_par.update_layout(height=max(200, len(sd.head(15))*28),
+                              margin=dict(t=10,b=10), coloraxis_showscale=False,
+                              yaxis=dict(autorange='reversed'))
+        st.plotly_chart(fig_par, use_container_width=True)
+    else:
+        st.info("No stop reason text has been entered for aerosol batches this period.")
 
     with st.expander("📋 Batch detail table"):
         avail = [c for c in ['period','line','line_id','name_en','brand','batch_num',
@@ -878,3 +1173,60 @@ if multi_month and t_trend is not None:
             fig5.update_layout(height=300,legend=dict(orientation='h',y=-0.2),
                                margin=dict(t=10,b=10))
             st.plotly_chart(fig5, use_container_width=True)
+
+        t5,t6 = st.columns(2)
+        with t5:
+            st.subheader("Cap units per hour trend")
+            if not caps_f.empty:
+                uph_t = (caps_f.groupby(['period','machine'])['units_per_hour']
+                         .mean().reset_index()
+                         .sort_values('period', key=lambda s: s.map(period_sort_key)))
+                fig6 = px.line(uph_t, x='period', y='units_per_hour', color='machine',
+                               markers=True, color_discrete_map=MACHINE_COLORS,
+                               labels={'units_per_hour':'Avg units/hour'})
+                fig6.update_layout(height=280, legend=dict(orientation='h',y=-0.2),
+                                   margin=dict(t=10,b=10))
+                st.plotly_chart(fig6, use_container_width=True)
+
+        with t6:
+            st.subheader("Aerosol units per hour trend")
+            if not aero_f.empty:
+                uph_ta = (aero_f.groupby(['period','line'])['units_per_hour']
+                          .mean().reset_index()
+                          .sort_values('period', key=lambda s: s.map(period_sort_key)))
+                fig7 = px.line(uph_ta, x='period', y='units_per_hour', color='line',
+                               markers=True, color_discrete_map=LINE_COLORS,
+                               labels={'units_per_hour':'Avg units/hour'})
+                fig7.update_layout(height=280, legend=dict(orientation='h',y=-0.2),
+                                   margin=dict(t=10,b=10))
+                st.plotly_chart(fig7, use_container_width=True)
+
+        t7,t8 = st.columns(2)
+        with t7:
+            st.subheader("Cap defect rate trend (%)")
+            if not caps_f.empty:
+                dr_t = (caps_f.groupby(['period','machine'])['defect_rate_pct']
+                        .mean().reset_index()
+                        .sort_values('period', key=lambda s: s.map(period_sort_key)))
+                fig8 = px.line(dr_t, x='period', y='defect_rate_pct', color='machine',
+                               markers=True, color_discrete_map=MACHINE_COLORS,
+                               labels={'defect_rate_pct':'Defect rate %'})
+                fig8.update_layout(height=280, legend=dict(orientation='h',y=-0.2),
+                                   margin=dict(t=10,b=10))
+                st.plotly_chart(fig8, use_container_width=True)
+
+        with t8:
+            st.subheader("Aerosol defect recording completeness (%)")
+            if not aero_f.empty:
+                rc_t = (aero_f.groupby(['period','line'])['defect_recorded']
+                        .mean().mul(100).reset_index()
+                        .sort_values('period', key=lambda s: s.map(period_sort_key)))
+                fig9 = px.line(rc_t, x='period', y='defect_recorded', color='line',
+                               markers=True, color_discrete_map=LINE_COLORS,
+                               labels={'defect_recorded':'Recording rate %'})
+                fig9.add_hline(y=100, line_dash='dash', line_color='#28a745',
+                               annotation_text='100% target')
+                fig9.update_layout(yaxis=dict(range=[0,105]),
+                                   height=280, legend=dict(orientation='h',y=-0.2),
+                                   margin=dict(t=10,b=10))
+                st.plotly_chart(fig9, use_container_width=True)
